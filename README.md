@@ -64,6 +64,10 @@ hour.
 └─────────────┘                             └──────────────────┘
 ```
 
+
+![Architecture Diagram](./assets/img/ARCHITECTURE_DIAGRAM.jpeg)
+
+
 Five layers, a protocol at every seam:
 
 | Layer | Protocol | Today | Swaps to |
