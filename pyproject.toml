@@ -20,6 +20,16 @@ dependencies = [
     "markdownify>=0.13",
 ]
 
+[project.optional-dependencies]
+# The WhatsApp surface links a personal account as a device, the way
+# web.whatsapp.com does. neonize is the whatsmeow binding that speaks that
+# protocol; it also needs the libmagic C library at import time
+# (`brew install libmagic`, or `apt install libmagic1`).
+whatsapp = [
+    "neonize>=0.4.3,<0.5",
+    "segno>=1.6",
+]
+
 [project.scripts]
 presence = "presence.__main__:main"
 

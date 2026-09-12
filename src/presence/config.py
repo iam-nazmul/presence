@@ -17,6 +17,10 @@ def _split(value: str) -> list[str]:
     return [p.strip() for p in value.split(",") if p.strip()]
 
 
+def _flag(name: str, default: bool = False) -> bool:
+    return os.getenv(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
+
+
 @dataclass
 class Settings:
     # --- model -------------------------------------------------------------
@@ -27,11 +31,19 @@ class Settings:
     model_fast: str = os.getenv("MODEL_FAST", "qwen3.5:4b")
     num_ctx: int = int(os.getenv("NUM_CTX", "32768"))
     temperature: float = float(os.getenv("TEMPERATURE", "0.3"))
-    max_turns: int = int(os.getenv("MAX_TURNS", "8"))
+    # Real work is multi-step -- check a folder, run a command, read the error,
+    # fix it -- and every confirmation spends a turn too. Eight ran out mid-task.
+    max_turns: int = int(os.getenv("MAX_TURNS", "16"))
     keep_alive: str = os.getenv("KEEP_ALIVE", "2h")
 
     # --- storage -----------------------------------------------------------
     db_path: str = os.getenv("DB_PATH", str(ROOT / "presence.db"))
+
+    # --- workspace ---------------------------------------------------------
+    # Everything the file and shell tools touch has to sit under this. Home by
+    # default so "make a Django project on my Desktop" works out of the box;
+    # narrow it to one projects folder if you want a tighter blast radius.
+    workspace_root: str = os.getenv("WORKSPACE_ROOT", str(Path.home()))
 
     # --- portal api --------------------------------------------------------
     # Loopback by default and not negotiable without an explicit override:
@@ -41,6 +53,23 @@ class Settings:
 
     # --- surfaces ----------------------------------------------------------
     telegram_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+
+    # WhatsApp links a personal account as a device, so there is no token to
+    # gate it on the way TELEGRAM_BOT_TOKEN gates Telegram -- it is opt-in by
+    # this flag, or by running `presence whatsapp` explicitly.
+    whatsapp_enabled: bool = _flag("WHATSAPP_ENABLED")
+    # The linked-device credential. Treat this file like a password.
+    whatsapp_session: str = os.getenv("WHATSAPP_SESSION", str(ROOT / "whatsapp-session.db"))
+    # Numbers the agent will answer. Empty means everyone who has your number,
+    # which on a personal account is usually not what you want.
+    whatsapp_allowed: list[str] = field(
+        default_factory=lambda: _split(os.getenv("WHATSAPP_ALLOWED", ""))
+    )
+    whatsapp_groups: bool = _flag("WHATSAPP_GROUPS")
+    whatsapp_self_chat: bool = _flag("WHATSAPP_SELF_CHAT", True)
+    whatsapp_mark_read: bool = _flag("WHATSAPP_MARK_READ", True)
+    # Pair by typing a code on the phone instead of scanning a QR.
+    whatsapp_pair_phone: str = os.getenv("WHATSAPP_PAIR_PHONE", "")
 
     # --- tools -------------------------------------------------------------
     exa_api_key: str = os.getenv("EXA_API_KEY", "")

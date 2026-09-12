@@ -103,8 +103,12 @@ class Decision:
 
 # Scopes granted per trust level. Computed from the principal BEFORE the model
 # runs -- no tool result and no fetched page can widen them.
+# 'files' and 'shell' reach the owner's actual machine, so they stop at the
+# owner. A member or a guest is never even shown that those tools exist --
+# specs_for() filters them out of the schema list before the model sees it.
 SCOPES_BY_TRUST: dict[str, set[str]] = {
-    "owner": {"web", "memory", "schedule", "crosspost", "context", "lead"},
+    "owner": {"web", "memory", "schedule", "crosspost", "context", "lead",
+              "files", "shell"},
     "member": {"web", "context", "lead"},
     "guest": {"web", "context", "lead"},
 }
@@ -118,7 +122,8 @@ _AUTO_OK: dict[str, set[str]] = {
 
 # Tools an owner never has to confirm -- confirming every memory write kills the
 # pace of a conversation.
-PREAPPROVED = {"remember", "recall", "forget", "list_schedules", "read_context", "schedule"}
+PREAPPROVED = {"remember", "recall", "forget", "list_schedules", "read_context", "schedule",
+               "list_dir", "read_file", "which"}
 
 # Tools any trust level may run, provided the human confirms in chat first.
 # Lead capture is the one write a stranger is *supposed* to make: the person
@@ -178,4 +183,5 @@ def load_packs() -> None:
         memory,
         schedule,
         web,
+        workspace,
     )
