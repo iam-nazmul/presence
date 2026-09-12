@@ -202,6 +202,6 @@ Three of them carry real weight:
   ## Team
 
 - **Zubaer Hossain** — Project lead, product concept, use-case design, documentation, presentation, and hackathon submission
-- **Belal Hossain** — System architecture and project design
+- **[Md. Belal Hossain](https://www.linkedin.com/in/belal-bh/)** — System architecture and project design
 - **Md. Nazmul Hossain** — Backend development, integrations, and local AI implementation
 - **Sharif Mohammad Nasrullah** — Integration testing, troubleshooting, and demo support
