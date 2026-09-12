@@ -196,3 +196,10 @@ Three of them carry real weight:
   owner wins the merge from either direction.
 - `test_tools` — every tool survives junk arguments, returns a non-empty string, and never
   raises. Models send `{"key": 5}` where a string belongs; that must not break a turn.
+
+  ## Team
+
+- **Zubaer Hossain** — Project lead, product concept, use-case design, documentation, presentation, and hackathon submission
+- **Belal Hossain** — System architecture and project design
+- **Md. Nazmul Hossain** — Backend development, integrations, and local AI implementation
+- **Sharif Mohammad Nasrullah** — Integration testing, troubleshooting, and demo support
