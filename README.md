@@ -203,5 +203,5 @@ Three of them carry real weight:
 
 - **Zubaer Hossain** — Project lead, product concept, use-case design, documentation, presentation, and hackathon submission
 - **[Md. Belal Hossain](https://www.linkedin.com/in/belal-bh/)** — System architecture and project design
-- **Md. Nazmul Hossain** — Backend development, integrations, and local AI implementation
+- **[Md. Nazmul Hossain](https://www.linkedin.com/in/iam-nazmul/)** — Backend development, integrations, and local AI implementation
 - **Sharif Mohammad Nasrullah** — Integration testing, troubleshooting, and demo support
