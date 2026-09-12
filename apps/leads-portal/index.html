@@ -1,0 +1,255 @@
+<title>Leads Portal</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  :root { color-scheme: light dark; }
+  [data-sort] { cursor: pointer; user-select: none; }
+</style>
+
+<div class="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+  <div class="mx-auto max-w-7xl px-4 py-6 md:px-6">
+
+    <header class="mb-5 flex flex-wrap items-end justify-between gap-3">
+      <div>
+        <h1 class="text-2xl font-semibold tracking-tight">Leads</h1>
+        <p id="sub" class="mt-1 text-sm text-slate-500 dark:text-slate-400">Loading…</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <span id="dot" class="inline-block h-2 w-2 rounded-full bg-slate-400"></span>
+        <span id="status" class="text-xs text-slate-500 dark:text-slate-400">connecting</span>
+        <button id="refresh"
+          class="ml-2 rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium
+                 hover:bg-white dark:border-slate-700 dark:hover:bg-slate-800">Refresh</button>
+      </div>
+    </header>
+
+    <!-- controls -->
+    <div class="mb-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+      <input id="q" type="search" placeholder="Search name, phone, email, company…"
+        class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm
+               placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500
+               dark:border-slate-700 dark:bg-slate-900 lg:col-span-2">
+      <select id="fBusiness"
+        class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm
+               dark:border-slate-700 dark:bg-slate-900"></select>
+      <select id="fStatus"
+        class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm
+               dark:border-slate-700 dark:bg-slate-900"></select>
+    </div>
+
+    <!-- table -->
+    <div class="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm
+                dark:border-slate-800 dark:bg-slate-900">
+      <table class="min-w-full text-sm">
+        <thead class="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase
+                      tracking-wide text-slate-500 dark:border-slate-800 dark:bg-slate-800/50">
+          <tr>
+            <th data-sort="created_at" class="px-3 py-2.5 font-medium">When</th>
+            <th data-sort="name"       class="px-3 py-2.5 font-medium">Name</th>
+            <th data-sort="phone"      class="px-3 py-2.5 font-medium">Phone</th>
+            <th data-sort="email"      class="px-3 py-2.5 font-medium">Email</th>
+            <th data-sort="company"    class="px-3 py-2.5 font-medium">Company</th>
+            <th data-sort="interest"   class="px-3 py-2.5 font-medium">Interest</th>
+            <th data-sort="id_number"  class="px-3 py-2.5 font-medium">ID</th>
+            <th data-sort="business"   class="px-3 py-2.5 font-medium">Business</th>
+            <th data-sort="status"     class="px-3 py-2.5 font-medium">Status</th>
+            <th class="px-3 py-2.5 font-medium">Card</th>
+          </tr>
+        </thead>
+        <tbody id="rows" class="divide-y divide-slate-100 dark:divide-slate-800"></tbody>
+      </table>
+      <div id="empty" class="hidden px-4 py-14 text-center text-sm text-slate-500"></div>
+    </div>
+
+    <p class="mt-3 text-xs text-slate-400">
+      ID numbers are masked. Click a row to reveal the full value.
+    </p>
+  </div>
+</div>
+
+<!-- photo modal -->
+<div id="modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/70 p-4">
+  <div class="max-h-full w-full max-w-2xl overflow-auto rounded-xl bg-white p-3 dark:bg-slate-900">
+    <div class="mb-2 flex items-center justify-between">
+      <h2 id="modalTitle" class="text-sm font-medium"></h2>
+      <button id="modalClose" class="rounded px-2 py-1 text-sm hover:bg-slate-100
+              dark:hover:bg-slate-800">Close</button>
+    </div>
+    <img id="modalImg" alt="Uploaded card" class="w-full rounded-lg">
+  </div>
+</div>
+
+<script>
+const API = localStorage.getItem("presenceApi") || "http://127.0.0.1:8765";
+
+let LEADS = [];
+let sortKey = "created_at";
+let sortDir = -1;          // newest first
+const revealed = new Set();
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// Mirrors the masking the agent already applies to the chat confirmation card:
+// the table is the thing most likely to be on a projector.
+const maskId = (v) => (!v ? "" : String(v).replace(/\s/g, "").length > 4
+  ? "…" + String(v).replace(/\s/g, "").slice(-4) : v);
+
+const when = (iso) => {
+  const d = new Date(iso);
+  if (isNaN(d)) return iso ?? "";
+  const mins = Math.round((Date.now() - d) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return mins + "m ago";
+  if (mins < 1440) return Math.round(mins / 60) + "h ago";
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+};
+
+function setStatus(ok, text) {
+  $("dot").className = "inline-block h-2 w-2 rounded-full " +
+    (ok ? "bg-emerald-500" : "bg-rose-500");
+  $("status").textContent = text;
+}
+
+async function load() {
+  try {
+    const r = await fetch(API + "/api/leads", { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    LEADS = await r.json();
+    setStatus(true, "live");
+    render();
+  } catch (e) {
+    setStatus(false, "offline");
+    LEADS = [];
+    render(String(e.message || e));
+  }
+}
+
+function options(sel, values, label) {
+  const cur = sel.value;
+  sel.innerHTML = `<option value="">${label}</option>` +
+    values.map((v) => `<option${v === cur ? " selected" : ""}>${esc(v)}</option>`).join("");
+}
+
+function visible() {
+  const q = $("q").value.trim().toLowerCase();
+  const b = $("fBusiness").value;
+  const s = $("fStatus").value;
+  let out = LEADS.filter((l) => {
+    if (b && l.business !== b) return false;
+    if (s && l.status !== s) return false;
+    if (!q) return true;
+    return ["name", "phone", "email", "company", "interest", "note", "id"]
+      .some((k) => String(l[k] ?? "").toLowerCase().includes(q));
+  });
+  out.sort((x, y) => {
+    const a = x[sortKey] ?? "", b2 = y[sortKey] ?? "";
+    return (a < b2 ? -1 : a > b2 ? 1 : 0) * sortDir;
+  });
+  return out;
+}
+
+function render(err) {
+  const rows = visible();
+  const tb = $("rows");
+  const empty = $("empty");
+
+  options($("fBusiness"), [...new Set(LEADS.map((l) => l.business).filter(Boolean))].sort(),
+          "All businesses");
+  options($("fStatus"), [...new Set(LEADS.map((l) => l.status).filter(Boolean))].sort(),
+          "All statuses");
+
+  $("sub").textContent = LEADS.length
+    ? `${rows.length} of ${LEADS.length} lead${LEADS.length === 1 ? "" : "s"}`
+    : "No leads yet";
+
+  document.querySelectorAll("[data-sort]").forEach((th) => {
+    const k = th.dataset.sort;
+    th.textContent = th.textContent.replace(/ [▲▼]$/, "") +
+      (k === sortKey ? (sortDir === 1 ? " ▲" : " ▼") : "");
+  });
+
+  if (!rows.length) {
+    tb.innerHTML = "";
+    empty.classList.remove("hidden");
+    // The overwhelmingly likely cause is that the agent simply is not running,
+    // so say that rather than "no results".
+    empty.innerHTML = err
+      ? `<p class="font-medium text-rose-600">Cannot reach the API at ${esc(API)}</p>
+         <p class="mt-2">Start it with:</p>
+         <code class="mt-1 inline-block rounded bg-slate-100 px-2 py-1 text-xs
+               dark:bg-slate-800">uv run presence api</code>
+         <p class="mt-3 text-xs text-slate-400">${esc(err)}</p>`
+      : LEADS.length
+        ? `<p>No lead matches those filters.</p>`
+        : `<p>No leads captured yet.</p>
+           <p class="mt-2 text-xs">Send a message to the Telegram bot to create one.</p>`;
+    return;
+  }
+
+  empty.classList.add("hidden");
+  tb.innerHTML = rows.map((l) => {
+    const show = revealed.has(l.id);
+    const idCell = l.id_number
+      ? `<span title="click row to toggle">${esc(show ? l.id_number : maskId(l.id_number))}</span>`
+      : `<span class="text-slate-300">—</span>`;
+    return `<tr data-id="${esc(l.id)}" class="hover:bg-slate-50 dark:hover:bg-slate-800/50">
+      <td class="whitespace-nowrap px-3 py-2 text-slate-500">${esc(when(l.created_at))}</td>
+      <td class="px-3 py-2 font-medium">${esc(l.name)}</td>
+      <td class="whitespace-nowrap px-3 py-2">${esc(l.phone)}</td>
+      <td class="px-3 py-2">${esc(l.email)}</td>
+      <td class="px-3 py-2">${esc(l.company)}</td>
+      <td class="px-3 py-2">${esc(l.interest)}</td>
+      <td class="whitespace-nowrap px-3 py-2 font-mono text-xs">${idCell}</td>
+      <td class="px-3 py-2 text-slate-500">${esc(l.business)}</td>
+      <td class="px-3 py-2"><span class="rounded-full bg-indigo-50 px-2 py-0.5 text-xs
+          font-medium text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300"
+          >${esc(l.status)}</span></td>
+      <td class="px-3 py-2">${l.has_file
+        ? `<button data-photo="${esc(l.id)}" data-name="${esc(l.name)}"
+             class="rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100
+                    dark:border-slate-700 dark:hover:bg-slate-800">View</button>`
+        : `<span class="text-slate-300">—</span>`}</td>
+    </tr>`;
+  }).join("");
+}
+
+// --- events ---------------------------------------------------------------
+
+$("q").addEventListener("input", () => render());
+$("fBusiness").addEventListener("change", () => render());
+$("fStatus").addEventListener("change", () => render());
+$("refresh").addEventListener("click", load);
+
+document.querySelectorAll("[data-sort]").forEach((th) =>
+  th.addEventListener("click", () => {
+    const k = th.dataset.sort;
+    if (k === sortKey) sortDir = -sortDir;
+    else { sortKey = k; sortDir = 1; }
+    render();
+  }));
+
+$("rows").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-photo]");
+  if (btn) {
+    $("modalTitle").textContent = btn.dataset.name || "Uploaded card";
+    $("modalImg").src = `${API}/api/leads/${encodeURIComponent(btn.dataset.photo)}/photo`;
+    $("modal").classList.replace("hidden", "flex");
+    return;
+  }
+  const tr = e.target.closest("tr[data-id]");
+  if (tr) {
+    const id = tr.dataset.id;
+    revealed.has(id) ? revealed.delete(id) : revealed.add(id);
+    render();
+  }
+});
+
+const close = () => { $("modal").classList.replace("flex", "hidden"); $("modalImg").src = ""; };
+$("modalClose").addEventListener("click", close);
+$("modal").addEventListener("click", (e) => { if (e.target === $("modal")) close(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+
+load();
+setInterval(load, 15000);   // a lead captured on stage shows up on its own
+</script>

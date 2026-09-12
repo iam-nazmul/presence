@@ -1,0 +1,47 @@
+[project]
+name = "presence"
+version = "0.1.0"
+description = "One agent, every surface. A surface-agnostic agent harness."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    # Pinned below 3.0 deliberately. openai 3.x swapped httpx for httpx2/httpcore2,
+    # and httpcore2 2.12 (the latest) awaits inside a finally while GeneratorExit is
+    # propagating, so every streamed completion leaves an abandoned response-body
+    # generator that blows up as "generator didn't stop after athrow()" on teardown.
+    # It is noise rather than data loss, but it buries real errors in the log.
+    # Reproducible with bare openai + httpcore2, so it is not ours to fix here.
+    # Revisit when httpcore2 > 2.12.0 ships.
+    "openai>=2.9,<3",
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+    "rich>=13.7",
+    "markdownify>=0.13",
+]
+
+[project.scripts]
+presence = "presence.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.12,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = "src"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.7",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

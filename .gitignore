@@ -1,0 +1,23 @@
+# secrets
+.env
+
+# local state
+presence.db
+presence.db-shm
+presence.db-wal
+*.sqlite3
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# editors / os
+.DS_Store
+.idea/
+.vscode/
