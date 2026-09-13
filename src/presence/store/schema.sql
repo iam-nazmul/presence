@@ -132,6 +132,11 @@ CREATE TABLE IF NOT EXISTS leads (
   created_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_leads_business ON leads (business, created_at);
+-- The email address is unique: one lead per person, because the same person
+-- talking twice used to land as two rows. That index is created in db.py
+-- rather than here -- this file runs on every connection, so a database that
+-- predates the constraint has to warn instead of failing to open. See
+-- _ensure_unique_lead_email.
 
 -- Files people send, held against the conversation until something claims them.
 -- A photo arrives on one message and the lead is written on a later one (after

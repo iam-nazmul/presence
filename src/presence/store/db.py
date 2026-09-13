@@ -8,6 +8,7 @@ tool call.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import uuid
@@ -16,6 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from presence.config import settings
+
+log = logging.getLogger("presence.store")
 
 _SCHEMA = Path(__file__).parent / "schema.sql"
 
@@ -49,8 +52,43 @@ def conn() -> sqlite3.Connection:
         c.execute("PRAGMA busy_timeout=15000")
         c.execute("PRAGMA synchronous=NORMAL")
         c.executescript(_SCHEMA.read_text())
+        _ensure_unique_lead_email(c)
         _local.conn = c
     return c
+
+
+# One lead per email address. Deliberately *not* in schema.sql: that file runs
+# through executescript on every new connection, so a database that already
+# holds two rows with the same email would raise here and take the whole
+# process down rather than just refusing the next duplicate. Creating it in
+# Python lets a collision degrade into a warning that names the problem.
+#
+# lower(trim(...)) because these addresses are typed by strangers or read off a
+# photograph -- "Nazmul@Gmail.com " and "nazmul@gmail.com" are one person, and
+# an index on the raw column would happily store both. Partial, because a
+# phone-only lead is valid and every one of those has email IS NULL.
+_UNIQUE_EMAIL = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email_unique
+  ON leads (lower(trim(email)))
+  WHERE email IS NOT NULL AND trim(email) <> ''
+"""
+
+
+def _ensure_unique_lead_email(c: sqlite3.Connection) -> None:
+    try:
+        c.execute(_UNIQUE_EMAIL)
+    except sqlite3.IntegrityError:
+        dupes = c.execute(
+            "SELECT lower(trim(email)) AS email, COUNT(*) AS n FROM leads"
+            " WHERE email IS NOT NULL AND trim(email) <> ''"
+            " GROUP BY lower(trim(email)) HAVING n > 1 ORDER BY n DESC"
+        ).fetchall()
+        log.warning(
+            "leads table still holds %d duplicated email address(es), so the unique "
+            "index was not created and duplicates are not being refused yet: %s. "
+            "Delete the extra rows in the portal and restart.",
+            len(dupes), ", ".join(f"{r['email']} x{r['n']}" for r in dupes[:5]),
+        )
 
 
 def init() -> None:
@@ -372,21 +410,63 @@ def cancel_trigger(principal_id: str, trigger_id: str) -> bool:
 LEAD_FIELDS = ("name", "phone", "email", "company", "interest", "note", "id_number")
 
 
+class DuplicateLead(Exception):
+    """A lead with this email address is already on file.
+
+    Carries the existing row so the caller can tell the person *which* lead
+    they already have rather than just refusing.
+    """
+
+    def __init__(self, existing: sqlite3.Row) -> None:
+        super().__init__(f"lead {existing['id']} already uses that email")
+        self.existing = existing
+
+
+def lead_by_email(email: str | None) -> sqlite3.Row | None:
+    """The lead on file for this address, matched the way the index matches."""
+    email = (email or "").strip()
+    if not email:
+        return None
+    return conn().execute(
+        f"SELECT id, business, {', '.join(LEAD_FIELDS)}, status, created_at"
+        " FROM leads WHERE lower(trim(email)) = lower(?) LIMIT 1",
+        (email,),
+    ).fetchone()
+
+
 def save_lead(business: str, fields: dict[str, Any], *, surface: str | None = None,
               conv_key: str | None = None, principal_id: str | None = None,
               attachment: bytes | None = None,
               attachment_kind: str | None = None) -> str:
-    """Insert one lead and return its id. Unknown keys in `fields` are dropped."""
+    """Insert one lead and return its id. Unknown keys in `fields` are dropped.
+
+    Raises DuplicateLead when the email address is already on file. Checked
+    up front so the caller gets the existing row to talk about, and again off
+    the IntegrityError because several Presence processes share this file and
+    two surfaces can reach this line at once.
+    """
     row = {k: (fields.get(k) or None) for k in LEAD_FIELDS}
+
+    existing = lead_by_email(row["email"])
+    if existing is not None:
+        raise DuplicateLead(existing)
+
     lead_id = _uid()[:12].upper()
-    conn().execute(
-        f"""INSERT INTO leads (id, business, {', '.join(LEAD_FIELDS)}, source_surface,
-                               source_conv_key, principal_id, attachment_kind,
-                               attachment, status, created_at)
-            VALUES (?, ?, {', '.join('?' * len(LEAD_FIELDS))}, ?, ?, ?, ?, ?, 'new', ?)""",
-        (lead_id, business, *[row[k] for k in LEAD_FIELDS], surface, conv_key,
-         principal_id, attachment_kind, attachment, now()),
-    )
+    try:
+        conn().execute(
+            f"""INSERT INTO leads (id, business, {', '.join(LEAD_FIELDS)}, source_surface,
+                                   source_conv_key, principal_id, attachment_kind,
+                                   attachment, status, created_at)
+                VALUES (?, ?, {', '.join('?' * len(LEAD_FIELDS))}, ?, ?, ?, ?, ?, 'new', ?)""",
+            (lead_id, business, *[row[k] for k in LEAD_FIELDS], surface, conv_key,
+             principal_id, attachment_kind, attachment, now()),
+        )
+    except sqlite3.IntegrityError:
+        # Lost the race, or the index caught a case the check above missed.
+        won = lead_by_email(row["email"])
+        if won is not None:
+            raise DuplicateLead(won) from None
+        raise
     conn().commit()
     return lead_id
 
@@ -434,6 +514,18 @@ def lead_photo(lead_id: str) -> tuple[bytes, str] | None:
     if row is None or row["attachment"] is None:
         return None
     return row["attachment"], (row["attachment_kind"] or "image")
+
+
+def delete_lead(lead_id: str) -> bool:
+    """Remove one lead. False when no such row existed.
+
+    The portal is the only caller: a lead captured on stage by mistake has to
+    be removable by the person standing there, and the alternative is editing
+    the database by hand mid-demo.
+    """
+    cur = conn().execute("DELETE FROM leads WHERE id = ?", (lead_id,))
+    conn().commit()
+    return cur.rowcount > 0
 
 
 def count_leads() -> int:

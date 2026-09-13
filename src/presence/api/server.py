@@ -1,6 +1,6 @@
-"""Read-only HTTP API over the lead store, for the portal.
+"""HTTP API over the lead store, for the portal.
 
-Deliberately the standard library. This serves three GET routes off a SQLite
+Deliberately the standard library. This serves a handful of routes off a SQLite
 table; a web framework would add a dependency tree and a second way to run the
 process in exchange for nothing.
 
@@ -9,9 +9,12 @@ already keeps one connection per thread with WAL and a busy_timeout, precisely
 so several threads and processes can share the file. The handler threads land
 in that design instead of fighting it.
 
-Read-only on purpose. The agent's confirmation card is the only path that
-writes a lead, and adding a second one here would quietly remove the human
-approval step that makes the whole thing trustworthy.
+No route here *creates* a lead. The agent's confirmation card stays the only
+path that writes one, so the human approval step that makes the whole thing
+trustworthy cannot be bypassed. DELETE is the one exception to read-only, and
+in the same spirit: a lead captured by mistake in front of an audience has to
+be removable by the person standing there, and the portal asks them to confirm
+before it sends the request.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ log = logging.getLogger("presence.api")
 MAX_LEADS = 1000
 
 _PHOTO = re.compile(r"^/api/leads/([A-Za-z0-9_-]{1,64})/photo$")
+_LEAD = re.compile(r"^/api/leads/([A-Za-z0-9_-]{1,64})$")
 # Newer rows store a real MIME type; the earliest ones stored a bare kind.
 _KIND = {"image": "image/jpeg", "file": "application/octet-stream"}
 
@@ -85,7 +89,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:  # noqa: N802  (stdlib naming)
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, DELETE, OPTIONS")
         self.end_headers()
 
     # --- routes ----------------------------------------------------------
@@ -114,6 +118,26 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             # Never let the stdlib render an HTML traceback at a JSON client.
             log.exception("api request failed: %s", path)
+            self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+
+    def do_DELETE(self) -> None:  # noqa: N802  (stdlib naming)
+        path = self.path.split("?", 1)[0].rstrip("/") or "/"
+        try:
+            one = _LEAD.match(path)
+            if one:
+                lead_id = one.group(1)
+                if not db.delete_lead(lead_id):
+                    return self._json({"error": "No such lead."}, 404)
+                # Worth a real log line, not debug: this is the one destructive
+                # route, so the terminal should show what left the table.
+                log.info("deleted lead %s", lead_id)
+                return self._json({"ok": True, "id": lead_id})
+
+            self._json({"error": f"No route for {path}."}, 404)
+        except BrokenPipeError:
+            pass
+        except Exception as e:
+            log.exception("api delete failed: %s", path)
             self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
 

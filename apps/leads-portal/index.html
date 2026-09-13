@@ -53,6 +53,7 @@
             <th data-sort="business"   class="px-3 py-2.5 font-medium">Business</th>
             <th data-sort="status"     class="px-3 py-2.5 font-medium">Status</th>
             <th class="px-3 py-2.5 font-medium">Card</th>
+            <th class="px-3 py-2.5 font-medium"><span class="sr-only">Delete</span></th>
           </tr>
         </thead>
         <tbody id="rows" class="divide-y divide-slate-100 dark:divide-slate-800"></tbody>
@@ -94,6 +95,12 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
 // the table is the thing most likely to be on a projector.
 const maskId = (v) => (!v ? "" : String(v).replace(/\s/g, "").length > 4
   ? "…" + String(v).replace(/\s/g, "").slice(-4) : v);
+
+// Inline rather than an icon font or a CDN sprite: one glyph is not worth a
+// second network dependency, and the portal has to work on a venue's wifi.
+const TRASH = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+  stroke-linecap="round" class="h-3.5 w-3.5" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2
+  M19 6l-1 14H6L5 6M10 11v5M14 11v5"/></svg>`;
 
 const when = (iso) => {
   const d = new Date(iso);
@@ -210,6 +217,13 @@ function render(err) {
              class="rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100
                     dark:border-slate-700 dark:hover:bg-slate-800">View</button>`
         : `<span class="text-slate-300">—</span>`}</td>
+      <td class="px-3 py-2">
+        <button data-del="${esc(l.id)}" data-name="${esc(l.name)}" title="Delete lead"
+          aria-label="Delete lead" class="rounded border border-slate-300 px-2 py-1
+                 text-slate-400 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600
+                 dark:border-slate-700 dark:hover:border-rose-800 dark:hover:bg-rose-950/40
+                 dark:hover:text-rose-400">${TRASH}</button>
+      </td>
     </tr>`;
   }).join("");
 }
@@ -229,7 +243,32 @@ document.querySelectorAll("[data-sort]").forEach((th) =>
     render();
   }));
 
+async function destroy(id, name) {
+  // A lead is the one thing here that cannot be recreated from anywhere else,
+  // so ask before sending -- and name the person, because "are you sure" on a
+  // table of twenty rows tells you nothing about which row you clicked.
+  if (!confirm(`Delete the lead for ${name || id}?\n\nThis cannot be undone.`)) return;
+  try {
+    const r = await fetch(`${API}/api/leads/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    // Drop it locally so the row disappears at once rather than on the next
+    // poll, then reload to stay honest about what the server actually holds.
+    LEADS = LEADS.filter((l) => l.id !== id);
+    revealed.delete(id);
+    render();
+    load();
+  } catch (e) {
+    setStatus(false, "delete failed");
+    alert(`Could not delete that lead.\n\n${e.message || e}`);
+  }
+}
+
 $("rows").addEventListener("click", (e) => {
+  const del = e.target.closest("[data-del]");
+  if (del) {
+    destroy(del.dataset.del, del.dataset.name);
+    return;
+  }
   const btn = e.target.closest("[data-photo]");
   if (btn) {
     $("modalTitle").textContent = btn.dataset.name || "Uploaded card";

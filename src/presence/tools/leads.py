@@ -40,6 +40,10 @@ async def save_lead(ctx: ToolContext, name: str, phone: str = "", email: str = "
     If they uploaded a photo of an ID or a card, read the details off it and
     pass them here; the photo itself is attached to the lead automatically.
     Use id_number only for a number actually printed on an uploaded document.
+
+    One lead per email address. If that address is already on file this comes
+    back refused, naming the existing reference -- so pass the email they
+    actually gave you and never retype an address from an earlier lead.
     """
     fields = {
         "name": _clean(name), "phone": _clean(phone), "email": _clean(email),
@@ -66,11 +70,27 @@ async def save_lead(ctx: ToolContext, name: str, phone: str = "", email: str = "
         if found:
             blob, mime = found
 
-    lead_id = db.save_lead(
-        _clean(business) or "default", fields,
-        surface=env.surface, conv_key=ctx.conv_key, principal_id=ctx.principal_id,
-        attachment=blob, attachment_kind=mime,
-    )
+    try:
+        lead_id = db.save_lead(
+            _clean(business) or "default", fields,
+            surface=env.surface, conv_key=ctx.conv_key, principal_id=ctx.principal_id,
+            attachment=blob, attachment_kind=mime,
+        )
+    except db.DuplicateLead as dup:
+        # An email is one person, so a second lead on it is almost always the
+        # same conversation happening twice -- a retry, or someone who came
+        # back a week later. Hand the model the row it collided with and tell
+        # it what to say, because the alternative is a silent second row or a
+        # bare "error" the person hears as a rejection.
+        prior = dup.existing
+        held = ", ".join(f"{f}={prior[f]}" for f in ("name", "phone", "company") if prior[f])
+        return (f"Not saved -- there is already a lead on file for {fields['email']}: "
+                f"reference {prior['id']}, captured {prior['created_at'][:10]}"
+                f"{' (' + held + ')' if held else ''}. Do not call save_lead again for "
+                f"this address. Tell them their details are already recorded, give them "
+                f"that reference, and ask whether anything has changed -- if it has, say "
+                f"someone will update the record. Only if they are a genuinely different "
+                f"person sharing the address, ask for another email and try that.")
 
     shown = ", ".join(f"{k}={v}" for k, v in fields.items() if v)
     extra = " Their uploaded photo is attached to it." if blob else ""
