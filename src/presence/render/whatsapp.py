@@ -25,6 +25,7 @@ types.
 
 from __future__ import annotations
 
+import logging
 import re
 
 from presence.core.capabilities import WHATSAPP
@@ -38,6 +39,8 @@ _BOLD = "\x00"
 _FENCE = "\x01"
 
 FENCE_RE = re.compile(r"```[a-zA-Z]*\n?(.*?)```", re.S)
+
+log = logging.getLogger("presence.whatsapp")
 
 
 def _link(m: re.Match[str]) -> str:
@@ -79,6 +82,13 @@ def to_whatsapp(text: str) -> str:
 # end can do nothing with it -- the detail they cannot use is already in the log.
 GLITCH = "sorry, something went wrong on my end. can you send that again?"
 
+# ...but a failure that was already written for a person -- "that photo took too
+# long, send a smaller one" -- is more useful than the apology, and swapping it
+# out was costing the one thing they could have acted on. The parenthesised
+# class name is what marks the ones that were not written for anybody.
+JARGON = re.compile(r"\((?:[A-Za-z]*(?:Error|Exception|Timeout|Warning))\)|"
+                    r"\b(?:internal error|did not manage to produce)\b", re.I)
+
 
 def _is_confirmation(block: ChoiceBlock) -> bool:
     """The parked-tool yes/no, as opposed to a genuine list of options.
@@ -96,7 +106,9 @@ def humanise(reply: Reply) -> Reply:
     """Strip the two things in a Reply that no person would ever send."""
     blocks = []
     for b in reply.blocks:
-        if isinstance(b, TextBlock) and b.style == "error":
+        if isinstance(b, TextBlock) and b.style == "error" and JARGON.search(b.text):
+            # Said plainly in the log, because the chat is about to stop saying it.
+            log.warning("softened an error reply on whatsapp: %s", b.text)
             blocks.append(TextBlock(GLITCH))
         elif isinstance(b, ChoiceBlock) and _is_confirmation(b):
             # The summary above it already ends in a question; the buttons were

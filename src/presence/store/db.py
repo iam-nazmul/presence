@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import threading
 import uuid
@@ -51,6 +52,9 @@ def conn() -> sqlite3.Connection:
         c.execute("PRAGMA journal_mode=WAL")
         c.execute("PRAGMA busy_timeout=15000")
         c.execute("PRAGMA synchronous=NORMAL")
+        # lead_by_phone compares numbers that were written down three different
+        # ways, and sqlite has no way to do that without help.
+        c.create_function("phonekey", 1, phone_key, deterministic=True)
         c.executescript(_SCHEMA.read_text())
         _ensure_unique_lead_email(c)
         _local.conn = c
@@ -411,15 +415,49 @@ LEAD_FIELDS = ("name", "phone", "email", "company", "interest", "note", "id_numb
 
 
 class DuplicateLead(Exception):
-    """A lead with this email address is already on file.
+    """This person is already on file.
 
-    Carries the existing row so the caller can tell the person *which* lead
-    they already have rather than just refusing.
+    Carries the existing row, and which field matched, so the caller can tell
+    them *which* lead they already have rather than just refusing.
     """
 
-    def __init__(self, existing: sqlite3.Row) -> None:
-        super().__init__(f"lead {existing['id']} already uses that email")
+    def __init__(self, existing: sqlite3.Row, field: str = "email",
+                 value: str | None = None) -> None:
+        super().__init__(f"lead {existing['id']} already uses that {field}")
         self.existing = existing
+        self.field = field
+        self.value = value or existing[field]
+
+
+def phone_key(value: str | None) -> str | None:
+    """The comparable part of a phone number.
+
+    A card is printed "+880 1700-000000", the same person types "01700000000",
+    and a colleague enters "8801700000000". The last nine digits are the only
+    part that survives all three: the country code comes and goes, and the
+    national trunk zero with it.
+    """
+    digits = re.sub(r"\D", "", value or "")
+    if not digits:
+        return None
+    return digits[-9:] if len(digits) >= 9 else digits
+
+
+def lead_by_phone(phone: str | None) -> sqlite3.Row | None:
+    """The lead on file for this number, however either was written down.
+
+    A scan, because the stored number keeps whatever punctuation it arrived
+    with and there is no normalised column to index. Leads are counted in
+    hundreds here; when that stops being true this wants a phone_key column.
+    """
+    key = phone_key(phone)
+    if not key:
+        return None
+    return conn().execute(
+        f"SELECT id, business, {', '.join(LEAD_FIELDS)}, status, created_at"
+        " FROM leads WHERE phone IS NOT NULL AND phonekey(phone) = ? LIMIT 1",
+        (key,),
+    ).fetchone()
 
 
 def lead_by_email(email: str | None) -> sqlite3.Row | None:
@@ -440,16 +478,25 @@ def save_lead(business: str, fields: dict[str, Any], *, surface: str | None = No
               attachment_kind: str | None = None) -> str:
     """Insert one lead and return its id. Unknown keys in `fields` are dropped.
 
-    Raises DuplicateLead when the email address is already on file. Checked
-    up front so the caller gets the existing row to talk about, and again off
-    the IntegrityError because several Presence processes share this file and
-    two surfaces can reach this line at once.
+    Raises DuplicateLead when this person is already on file. Checked up front
+    so the caller gets the existing row to talk about, and again off the
+    IntegrityError because several Presence processes share this file and two
+    surfaces can reach this line at once.
+
+    An email decides it when there is one: two colleagues photographed at the
+    same stand share the company switchboard on their cards, and refusing the
+    second of them would be worse than a duplicate. With no email to go on, the
+    number is what is left, and that is the case a re-photographed card hits.
     """
     row = {k: (fields.get(k) or None) for k in LEAD_FIELDS}
 
     existing = lead_by_email(row["email"])
     if existing is not None:
-        raise DuplicateLead(existing)
+        raise DuplicateLead(existing, "email", row["email"])
+    if not row["email"]:
+        existing = lead_by_phone(row["phone"])
+        if existing is not None:
+            raise DuplicateLead(existing, "phone", row["phone"])
 
     lead_id = _uid()[:12].upper()
     try:
@@ -465,7 +512,7 @@ def save_lead(business: str, fields: dict[str, Any], *, surface: str | None = No
         # Lost the race, or the index caught a case the check above missed.
         won = lead_by_email(row["email"])
         if won is not None:
-            raise DuplicateLead(won) from None
+            raise DuplicateLead(won, "email", row["email"]) from None
         raise
     conn().commit()
     return lead_id

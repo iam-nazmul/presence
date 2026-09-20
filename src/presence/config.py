@@ -29,12 +29,23 @@ class Settings:
     api_key: str = ""
     model_main: str = os.getenv("MODEL_MAIN", "qwen3.5:9b")
     model_fast: str = os.getenv("MODEL_FAST", "qwen3.5:4b")
+    # Used for the turns that carry a photo, when the main model cannot see.
+    # Empty means the main model handles those too -- right for a hosted
+    # multimodal model, wrong for most local ones, where the picture is simply
+    # dropped and the agent answers as if nothing was attached.
+    model_vision: str = os.getenv("MODEL_VISION", "")
     num_ctx: int = int(os.getenv("NUM_CTX", "32768"))
     temperature: float = float(os.getenv("TEMPERATURE", "0.3"))
     # Real work is multi-step -- check a folder, run a command, read the error,
     # fix it -- and every confirmation spends a turn too. Eight ran out mid-task.
     max_turns: int = int(os.getenv("MAX_TURNS", "16"))
     keep_alive: str = os.getenv("KEEP_ALIVE", "2h")
+    # How long one model call may take. A turn carrying a photo gets the longer
+    # one: a local vision model reading a card is minutes of work, and a
+    # timeout here reaches the person as "something went wrong" after they have
+    # already waited.
+    request_timeout_s: float = float(os.getenv("REQUEST_TIMEOUT_S", "180"))
+    vision_timeout_s: float = float(os.getenv("VISION_TIMEOUT_S", "420"))
 
     # --- storage -----------------------------------------------------------
     db_path: str = os.getenv("DB_PATH", str(ROOT / "presence.db"))
@@ -83,6 +94,11 @@ class Settings:
     # One file's worth of text, capped so a long contract cannot push the
     # conversation it arrived in out of the context window.
     attachment_max_chars: int = int(os.getenv("ATTACHMENT_MAX_CHARS", "12000"))
+    # Photos are downscaled before they reach the model. Twelve megapixels of
+    # business card is thousands of image tokens and minutes of local inference;
+    # the card itself is perfectly legible at this edge.
+    image_max_edge: int = int(os.getenv("IMAGE_MAX_EDGE", "1280"))
+    image_quality: int = int(os.getenv("IMAGE_QUALITY", "82"))
     # Transcription speaks the OpenAI /audio/transcriptions wire format. Point
     # it at OpenAI, at Groq, or at a whisper.cpp server on this machine. Empty
     # means voice notes are only transcribed when PROVIDER is openai already.

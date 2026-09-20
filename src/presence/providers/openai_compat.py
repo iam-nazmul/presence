@@ -43,7 +43,7 @@ class OpenAICompatProvider:
         self._client = AsyncOpenAI(
             base_url=self.base_url,
             api_key=self.api_key or "none",
-            timeout=180.0,
+            timeout=settings.request_timeout_s,
             max_retries=1,
         )
 
@@ -124,10 +124,39 @@ class OpenAICompatProvider:
 
 
 class ModelRouter:
-    """Two tiers. Cheap model for mechanical work, main model for the conversation."""
+    """Two tiers. Cheap model for mechanical work, main model for the conversation.
+
+    Three, when a photo is in play. A business card or an ID arrives as image
+    parts on the user message, and a text-only model does not refuse those --
+    it drops them and answers as though nothing was attached, which reads as the
+    agent ignoring the card. MODEL_VISION is the way out on a local setup, where
+    the model holding the conversation usually cannot see.
+    """
 
     FAST_TASKS = {"summarize", "classify", "title"}
 
     @staticmethod
     def pick(task: str = "chat") -> str:
+        if task == "vision" and settings.model_vision:
+            return settings.model_vision
         return settings.model_fast if task in ModelRouter.FAST_TASKS else settings.model_main
+
+    @staticmethod
+    def for_messages(messages: list[dict[str, Any]]) -> str:
+        """The model this exchange needs, given what is actually in it."""
+        return ModelRouter.pick("vision" if carries_image(messages) else "chat")
+
+
+def carries_image(messages: list[dict[str, Any]]) -> bool:
+    """Is there a picture anywhere in this exchange?
+
+    Multimodal content is a list of parts rather than a string, which is the
+    only marker there is -- and it has to hold for the whole exchange, not just
+    the newest message: a lead is written after the confirmation, and by then
+    the card is several messages back.
+    """
+    return any(
+        isinstance(m.get("content"), list)
+        and any(p.get("type") == "image_url" for p in m["content"] if isinstance(p, dict))
+        for m in messages
+    )

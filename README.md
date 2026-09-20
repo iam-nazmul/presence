@@ -55,6 +55,11 @@ reachable by everyone who has it, and an empty allowlist means the agent answers
 them. Group chats are off unless `WHATSAPP_GROUPS=true`, and your own "Message yourself"
 chat works out of the box — the easiest way to try it without a second phone.
 
+Photograph a business card or an ID and it reads the details off the picture, fills in
+the lead and shows you the fields before anything is stored. That needs a model that can
+see: set `MODEL_VISION` if `MODEL_MAIN` is a local text-only model, or the photo is
+quietly dropped and the reply comes back as though nothing was sent.
+
 Send it a PDF, a Word file, a spreadsheet exported as CSV or a voice note and it reads
 them: the document's text and the transcript arrive with the message, so it answers the
 question rather than asking you to paste the contents. Voice notes need a transcription

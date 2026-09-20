@@ -288,9 +288,11 @@ class WhatsAppAdapter:
         elif _has(msg, "imageMessage"):
             img = msg.imageMessage
             text = img.caption
+            data = await self._download(msg, getattr(img, "fileLength", 0))
             attachments.append(Attachment(
                 kind="image", name="photo", mime=img.mimetype or "image/jpeg",
-                data=await self._download(msg, getattr(img, "fileLength", 0)),
+                data=data,
+                problem=None if data else "the photo would not download -- it was not seen",
             ))
         elif _has(msg, "videoMessage"):
             text = msg.videoMessage.caption

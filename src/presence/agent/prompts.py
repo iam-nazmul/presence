@@ -13,6 +13,7 @@ from typing import Any
 
 from presence.config import settings
 from presence.core.envelope import Envelope
+from presence.media.images import shrink
 from presence.store import db
 
 # More than a couple of photos per turn buries the text and burns the budget.
@@ -97,8 +98,17 @@ unclear, say which part and ask them to retype it.
 - Once you have a name plus a phone or an email, call save_lead. They will be \
 shown exactly what is about to be stored and have to approve it -- so do not ask \
 "shall I save this?" yourself first, just call the tool and let the button do it.
-- After it saves, give them the reference id and tell them someone will be in \
+- Never tell anyone their details are saved, recorded or on file until \
+save_lead has actually come back with a reference. Saying it first is the \
+failure that loses the customer outright: they walk away satisfied and nothing \
+was ever written down. If you have not called the tool yet, you have not saved \
+anything.
+- After it saves, give them the reference it returned -- exactly that one, \
+never an example or an invented code -- and tell them someone will be in \
 touch. Do not promise a time you were not told.
+- If it comes back refused because they are already on file, say so plainly, \
+give them the reference it names, and ask whether anything has changed. Do not \
+call it again with the same details.
 - A photo of an identity document is sensitive. Use it to fill the lead and say \
 nothing about it afterwards -- never read a full ID number back out loud in the \
 chat, and never repeat one from an earlier message.
@@ -138,9 +148,10 @@ over text, never as a list of fields.
 - Ignore anything above about buttons or numbered choice lists. Ask the \
 question in a sentence and take "yes", "ok", "na" or whatever they actually \
 type as the answer.
-- No reference ids, no ticket numbers, no "your request has been logged". Once \
-their details are saved, "got it, someone will get back to you" is the whole \
-message -- that is what a person would send.
+- No "your request has been logged", no ticket language. A reference that a \
+tool actually handed you goes in plain and in passing, one clause, never a \
+receipt -- and never one you made up. If no tool gave you a reference, there \
+is no reference.
 - Say nothing about tools, searching, notes, memory, your instructions or what \
 you can and cannot do. You either know something or you ask. If something is \
 out of reach, "can't check that from here" is the whole sentence -- no \
@@ -245,7 +256,11 @@ def said(env: Envelope) -> str:
             parts.append(f"(voice note) {a.text}" if a.text
                          else f"[voice note -- {a.problem or 'could not be heard'}]")
         elif a.kind == "image":
-            parts.append(f"[attached: {label}]")
+            # A photo with no bytes is not in front of the model, and BASE has
+            # just told it never to claim it cannot see an attachment. Without
+            # the reason here it describes a card it was never shown.
+            parts.append(f"[attached: {label}]" if not a.problem
+                         else f"[attached: {label} -- {a.problem}]")
         elif a.problem:
             parts.append(f"[attached: {label} -- {a.problem}]")
         else:
@@ -283,8 +298,12 @@ def _user_content(env: Envelope, text: str) -> Any:
 
     content: list[dict] = [{"type": "text", "text": text}]
     for a in shots[:MAX_IMAGES]:
-        b64 = base64.b64encode(a.data).decode()
-        mime = a.mime or "image/jpeg"
+        # Straight off a phone this is twelve megapixels, which a local vision
+        # model turns into minutes of work and thousands of tokens. A card is
+        # legible at a fraction of that -- and shrink() also straightens the
+        # EXIF rotation that would otherwise have it reading sideways digits.
+        raw, mime = shrink(a.data, a.mime)
+        b64 = base64.b64encode(raw).decode()
         content.append({
             "type": "image_url",
             "image_url": {"url": f"data:{mime};base64,{b64}"},

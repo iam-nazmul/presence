@@ -41,9 +41,11 @@ async def save_lead(ctx: ToolContext, name: str, phone: str = "", email: str = "
     pass them here; the photo itself is attached to the lead automatically.
     Use id_number only for a number actually printed on an uploaded document.
 
-    One lead per email address. If that address is already on file this comes
-    back refused, naming the existing reference -- so pass the email they
-    actually gave you and never retype an address from an earlier lead.
+    One lead per person. An email already on file comes back refused, and so
+    does a repeat of the same phone number when there is no email -- the same
+    card photographed twice is the usual way that happens. A refusal names the
+    existing reference, so pass what they actually gave you and never retype
+    details from an earlier lead.
     """
     fields = {
         "name": _clean(name), "phone": _clean(phone), "email": _clean(email),
@@ -83,14 +85,17 @@ async def save_lead(ctx: ToolContext, name: str, phone: str = "", email: str = "
         # it what to say, because the alternative is a silent second row or a
         # bare "error" the person hears as a rejection.
         prior = dup.existing
-        held = ", ".join(f"{f}={prior[f]}" for f in ("name", "phone", "company") if prior[f])
-        return (f"Not saved -- there is already a lead on file for {fields['email']}: "
-                f"reference {prior['id']}, captured {prior['created_at'][:10]}"
-                f"{' (' + held + ')' if held else ''}. Do not call save_lead again for "
-                f"this address. Tell them their details are already recorded, give them "
-                f"that reference, and ask whether anything has changed -- if it has, say "
-                f"someone will update the record. Only if they are a genuinely different "
-                f"person sharing the address, ask for another email and try that.")
+        shown_fields = ("name", "phone", "company") if dup.field == "email" else ("name", "email")
+        held = ", ".join(f"{f}={prior[f]}" for f in shown_fields if prior[f])
+        again = ("ask for another email and try that" if dup.field == "email"
+                 else "ask for their email address and try that")
+        return (f"Not saved -- there is already a lead on file for that "
+                f"{dup.field} ({dup.value}): reference {prior['id']}, captured "
+                f"{prior['created_at'][:10]}{' (' + held + ')' if held else ''}. Do not "
+                f"call save_lead again with the same {dup.field}. Tell them their details "
+                f"are already recorded, give them that reference, and ask whether anything "
+                f"has changed -- if it has, say someone will update the record. Only if "
+                f"they are genuinely a different person, {again}.")
 
     shown = ", ".join(f"{k}={v}" for k, v in fields.items() if v)
     extra = " Their uploaded photo is attached to it." if blob else ""

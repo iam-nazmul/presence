@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -30,10 +31,16 @@ from presence.core.events import (
     ToolStarted,
 )
 from presence.core.reply import Reply, TextBlock
-from presence.providers.openai_compat import ModelRouter, OpenAICompatProvider
+from presence.providers.openai_compat import (
+    ModelRouter,
+    OpenAICompatProvider,
+    carries_image,
+)
 from presence.store import db
 from presence.tools import registry
 from presence.tools.registry import ToolContext, ToolSpec
+
+log = logging.getLogger("presence.agent")
 
 MAX_TOOL_RESULT = 6000
 
@@ -75,7 +82,12 @@ class DefaultRuntime:
 
     async def _drive(self, env: Envelope, conv_key: str, principal_id: str,
                      messages: list[dict], start_turn: int) -> AsyncIterator[AgentEvent]:
-        model = ModelRouter.pick("chat")
+        model = ModelRouter.for_messages(messages)
+        # A local vision model reading a photograph is minutes of work, and the
+        # ordinary timeout turns that into "something went wrong" after the
+        # person has already waited for it.
+        budget = (settings.vision_timeout_s if carries_image(messages)
+                  else settings.request_timeout_s)
         run_id = db.start_run(env.id, conv_key, principal_id, env.surface,
                               self.provider.name, model)
         tools = registry.specs_for(env.trust)
@@ -88,7 +100,8 @@ class DefaultRuntime:
                 text_parts: list[str] = []
                 calls: list[dict] = []
 
-                async for delta in self.provider.stream(messages, tools, model=model):
+                async for delta in self.provider.stream(messages, tools, model=model,
+                                                        timeout=budget):
                     if delta.thinking:
                         yield ThinkingDelta(delta.thinking)
                     if delta.text:
@@ -174,8 +187,13 @@ class DefaultRuntime:
                 + "I ran out of steps before finishing. That is what I have so far."
             ))
         except Exception as e:  # never let a provider hiccup kill the surface
+            # Logged, not just recorded: the reply the person gets is deliberately
+            # plain, and on WhatsApp it is softened further, so without this line
+            # a failure leaves no trace anywhere anyone looks.
+            log.exception("run %s failed on %s after turn %d (model %s)",
+                          run_id, env.surface, turn, model)
             db.end_run(run_id, "failed", turn, error=f"{type(e).__name__}: {e}")
-            yield Failed(f"Something broke while I was working on that ({type(e).__name__}).")
+            yield Failed(_failure_text(e, env))
 
     # --- tool execution --------------------------------------------------
 
@@ -276,6 +294,22 @@ def _confirm_text(spec: ToolSpec | None, call: dict) -> str:
             pass
     pretty = ", ".join(f"{k}={_redact(k, v)}" for k, v in args.items())
     return f"This will run {call['function']['name']}({pretty}). Go ahead?"
+
+
+def _failure_text(e: Exception, env: Envelope) -> str:
+    """What to say out loud about a failure.
+
+    A timeout is not a bug the person can do anything about, but it is the one
+    failure with an obvious way round it, so it gets its own sentence instead of
+    the generic one -- and a photo is nearly always what caused it.
+    """
+    name = type(e).__name__
+    if "Timeout" in name or "timed out" in str(e).lower():
+        if any(a.kind == "image" for a in env.attachments):
+            return ("That photo took too long to go through. Send a smaller one, or "
+                    "just type the details and I will take them down.")
+        return "That took too long to come back. Try me again?"
+    return f"Something broke while I was working on that ({name})."
 
 
 def _reply(text: str) -> Reply:
