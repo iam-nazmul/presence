@@ -12,6 +12,7 @@ import logging
 import time
 
 from presence.agent.loop import DefaultRuntime
+from presence.agent.prompts import said
 from presence.core.envelope import Envelope
 from presence.core.events import (
     Failed,
@@ -25,6 +26,7 @@ from presence.core.events import (
 from presence.core.reply import ChoiceBlock, Reply, TextBlock
 from presence.gateway import hub
 from presence.gateway.router import QUEUE
+from presence.media import read_attachments
 from presence.store import db
 
 log = logging.getLogger("presence.worker")
@@ -121,7 +123,16 @@ async def handle(env: Envelope, runtime: DefaultRuntime) -> None:
         pending, approved = decision
         stream = runtime.resume(env, conv_key, principal_id, pending, approved)
     else:
-        db.add_message(conv_key, "user", {"role": "user", "content": env.text})
+        # Read the files and voice notes first, so the model is answering what
+        # they sent rather than the fact that they sent something. Reading a PDF
+        # or reaching a transcriber takes seconds, which is why this is here and
+        # not in ingest -- the typing indicator is already up by now.
+        if any(a.data and a.kind in ("file", "audio") for a in env.attachments):
+            if presenter.caps.supports_typing and presenter.adapter:
+                await presenter.adapter.typing(env.conversation, True)
+            env = await read_attachments(env)
+            presenter.env = env
+        db.add_message(conv_key, "user", {"role": "user", "content": said(env)})
         stream = runtime.run(env, conv_key, principal_id)
 
     final: Reply | None = None
@@ -149,11 +160,30 @@ async def handle(env: Envelope, runtime: DefaultRuntime) -> None:
     await presenter.finish(final)
 
 
+# What agreement and refusal actually look like when nobody was shown a button.
+# WhatsApp is the reason this list is long: the numbered prompt is not rendered
+# there, so the answer arrives as whatever the person would have said out loud,
+# in English or in Banglish. Anything not on either list falls through and is
+# answered as an ordinary message, which is the safe way to be wrong -- the
+# parked call stays parked rather than running on a maybe.
+YES = {
+    "1", "yes", "y", "yeah", "yep", "yup", "yes please", "sure", "ok", "okay",
+    "k", "fine", "do it", "go ahead", "go", "please do", "send it", "save it",
+    "confirm", "confirmed", "correct", "right", "haan", "han", "ha", "hae",
+    "ji", "jee", "accha", "thik ache", "thik", "হ্যাঁ", "হ্যা", "জি", "ঠিক আছে",
+}
+NO = {
+    "2", "no", "n", "nope", "nah", "na", "not now", "later", "cancel", "stop",
+    "don't", "dont", "do not", "no thanks", "leave it", "skip", "na thak",
+    "thak", "না", "নাহ", "থাক",
+}
+
+
 def _confirmation_answer(env: Envelope, conv_key: str) -> tuple[dict, bool] | None:
     """Was this message an answer to a parked confirmation?
 
-    Accepts a button callback (confirm:<run>:<call>:yes) or, on surfaces without
-    buttons, a bare '1' / '2' against the numbered fallback.
+    Accepts a button callback (confirm:<run>:<call>:yes), a bare '1' / '2'
+    against the numbered fallback, or the plain words people use instead.
     """
     import json
 
@@ -162,13 +192,14 @@ def _confirmation_answer(env: Envelope, conv_key: str) -> tuple[dict, bool] | No
         return None
 
     choice_id = env.context.data.get("choice_id", "")
-    text = env.text.strip().lower()
+    # Texted answers arrive with the punctuation and casing people type.
+    text = env.text.strip().lower().strip(" .!?।")
 
     if choice_id.startswith("confirm:"):
         approved = choice_id.endswith(":yes")
-    elif text in ("1", "yes", "y", "do it", "go ahead", "ok"):
+    elif text in YES:
         approved = True
-    elif text in ("2", "no", "n", "cancel", "stop"):
+    elif text in NO:
         approved = False
     else:
         return None

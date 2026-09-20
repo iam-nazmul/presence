@@ -33,7 +33,6 @@ Build that boundary once, correctly, and adding a surface is about 150 lines.
 ollama serve && ollama pull qwen3.5:9b   # any model whose `ollama show` lists `tools`
 uv sync
 cp .env.example .env                     # add TELEGRAM_BOT_TOKEN for the phone surface
-
 uv run presence doctor                   # checks model, tool-calling, tokens, database
 uv run presence chat                     # talk to it in the terminal
 uv run presence serve                    # every configured surface at once
@@ -55,6 +54,22 @@ Set `WHATSAPP_ALLOWED` before pointing this at a number you use. Your personal W
 reachable by everyone who has it, and an empty allowlist means the agent answers all of
 them. Group chats are off unless `WHATSAPP_GROUPS=true`, and your own "Message yourself"
 chat works out of the box — the easiest way to try it without a second phone.
+
+Send it a PDF, a Word file, a spreadsheet exported as CSV or a voice note and it reads
+them: the document's text and the transcript arrive with the message, so it answers the
+question rather than asking you to paste the contents. Voice notes need a transcription
+endpoint — `STT_BASE_URL`, anything speaking the OpenAI `/audio/transcriptions` format —
+and without one it says it could not hear the note instead of guessing. A file it truly
+cannot read (a scanned PDF, an .xlsx) comes back with the reason and the thing that would
+work instead. The same goes for Telegram.
+
+Replies on this surface are written to read like a text message from your phone, not
+like output: no headings or bullets, a couple of sentences rather than a report, the
+same language and register the other person used, and the typing indicator held for
+about as long as the message would have taken to write (`WHATSAPP_HUMAN_DELAY=false`
+turns that pacing off). Set `OWNER_NAME` so it knows whose phone it is answering. It
+will not volunteer that it is software, and it will not deny it either — asked outright,
+it says whose assistant it is and offers to fetch you.
 
 This is not an API Meta publishes, and automating a personal account is against the
 WhatsApp ToS; numbers do get banned for it. Use a spare number.

@@ -7,12 +7,20 @@ precisely so the model is told to write plain prose -- but a model that has
 spent its whole life emitting markdown will still reach for ** now and then, so
 this translates rather than trusting the prompt to hold.
 
+Replies here are meant to read as a text message from the owner's own phone,
+not as output -- see WHATSAPP_VOICE in agent/prompts.py for the writing side of
+that. humanise() below is the part the prompt cannot do: a model cannot talk its
+way out of an exception name or a numbered confirm that the code inserted after
+it had finished writing.
+
 Buttons are deliberately not rendered. whatsmeow can put an interactive payload
 on the wire, but a *personal* account is not a Business account and the phones
 on the other end mostly draw nothing at all -- which would silently eat every
-confirmation prompt. flatten() already degrades a ChoiceBlock to a numbered
-list, and worker._confirmation_answer accepts a bare "1"/"2" against it, so the
-confirm flow works here without buttons existing.
+confirmation prompt. flatten() degrades a ChoiceBlock to a numbered list, which
+is right for a real set of options and wrong for the tool confirmations, where
+the summary is already a question: humanise() drops the numbers from those, and
+worker._confirmation_answer takes the "yes", "ok" or "na" a person actually
+types.
 """
 
 from __future__ import annotations
@@ -20,7 +28,7 @@ from __future__ import annotations
 import re
 
 from presence.core.capabilities import WHATSAPP
-from presence.core.reply import FileBlock, Reply
+from presence.core.reply import ChoiceBlock, FileBlock, Reply, TextBlock
 from presence.render.base import flatten, split_text
 
 # Bold is *x* on WhatsApp but **x** in markdown, and *x* in markdown is italic.
@@ -66,6 +74,41 @@ def to_whatsapp(text: str) -> str:
     return out.strip()
 
 
+# Nobody types "I hit an internal error (KeyError)". An exception class in a
+# chat window is a machine with its guts showing, and the person on the other
+# end can do nothing with it -- the detail they cannot use is already in the log.
+GLITCH = "sorry, something went wrong on my end. can you send that again?"
+
+
+def _is_confirmation(block: ChoiceBlock) -> bool:
+    """The parked-tool yes/no, as opposed to a genuine list of options.
+
+    registry.confirm_choices builds exactly these two ids, and
+    worker._confirmation_answer takes a plain "yes" or "no" against them -- so
+    on this surface the numbered scaffolding buys nothing and costs the whole
+    illusion. A real choice of three restaurants still gets numbered.
+    """
+    return (len(block.choices) == 2
+            and all(c.id.startswith("confirm:") for c in block.choices))
+
+
+def humanise(reply: Reply) -> Reply:
+    """Strip the two things in a Reply that no person would ever send."""
+    blocks = []
+    for b in reply.blocks:
+        if isinstance(b, TextBlock) and b.style == "error":
+            blocks.append(TextBlock(GLITCH))
+        elif isinstance(b, ChoiceBlock) and _is_confirmation(b):
+            # The summary above it already ends in a question; the buttons were
+            # only ever a way of answering it.
+            if b.prompt.strip():
+                blocks.append(TextBlock(b.prompt.strip()))
+        else:
+            blocks.append(b)
+    return Reply(blocks=blocks, ephemeral=reply.ephemeral,
+                 reply_in_thread=reply.reply_in_thread)
+
+
 def media(reply: Reply) -> list[FileBlock]:
     """Blocks that can ride as real WhatsApp media instead of a text stub.
 
@@ -80,6 +123,7 @@ def media(reply: Reply) -> list[FileBlock]:
 
 def render(reply: Reply) -> list[str]:
     """One string per outbound WhatsApp message. Empty when there is only media."""
+    reply = humanise(reply)
     sendable = {id(b) for b in media(reply)}
     text_only = Reply(blocks=[b for b in reply.blocks if id(b) not in sendable])
     body = to_whatsapp(flatten(text_only, WHATSAPP))

@@ -101,6 +101,11 @@ WHATSAPP = SurfaceCapabilities(
     supports_images=True,
     supports_voice=True,
     supports_streaming=False,
+    # The adapter sends a real "typing…" presence, and saying so here is what
+    # stops the worker filling a slow turn with "Searching the web…" instead.
+    # On a personal number that interim line is the giveaway: people do not
+    # narrate their own lookups before answering.
+    supports_typing=True,
     latency_budget_s=15.0,
 )
 

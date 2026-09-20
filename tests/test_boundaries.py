@@ -12,7 +12,8 @@ import re
 SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "presence"
 
 # Everything except adapters/ and render/ must be surface-agnostic.
-CORE_DIRS = ["core", "agent", "providers", "tools", "store", "scheduler", "gateway"]
+CORE_DIRS = ["core", "agent", "providers", "tools", "store", "scheduler", "gateway",
+             "media"]
 SURFACE_SDKS = {"telegram", "slack", "slack_sdk", "fastapi", "frappe", "discord",
                 "twilio", "neonize", "segno"}
 

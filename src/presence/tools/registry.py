@@ -177,6 +177,7 @@ def confirm_choices(run_id: str, call_id: str) -> list[Choice]:
 def load_packs() -> None:
     """Import the tool packs. A pack is any module that registers into TOOLS."""
     from presence.tools import (  # noqa: F401
+        attachments,
         context,
         crosspost,
         leads,

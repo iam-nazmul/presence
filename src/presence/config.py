@@ -70,6 +70,25 @@ class Settings:
     whatsapp_mark_read: bool = _flag("WHATSAPP_MARK_READ", True)
     # Pair by typing a code on the phone instead of scanning a QR.
     whatsapp_pair_phone: str = os.getenv("WHATSAPP_PAIR_PHONE", "")
+    # A reply that lands 200ms after they hit send was not typed by anybody, and
+    # that is the tell people notice before they have read a word of it. These
+    # pace the outbound message like someone reading it and typing an answer.
+    whatsapp_human_delay: bool = _flag("WHATSAPP_HUMAN_DELAY", True)
+    whatsapp_typing_cps: float = float(os.getenv("WHATSAPP_TYPING_CPS", "18"))
+    whatsapp_max_delay_s: float = float(os.getenv("WHATSAPP_MAX_DELAY_S", "6"))
+
+    # --- attachments -------------------------------------------------------
+    # Documents and voice notes are read before the model sees the message, so
+    # nobody is ever asked to paste the contents of a file they already sent.
+    # One file's worth of text, capped so a long contract cannot push the
+    # conversation it arrived in out of the context window.
+    attachment_max_chars: int = int(os.getenv("ATTACHMENT_MAX_CHARS", "12000"))
+    # Transcription speaks the OpenAI /audio/transcriptions wire format. Point
+    # it at OpenAI, at Groq, or at a whisper.cpp server on this machine. Empty
+    # means voice notes are only transcribed when PROVIDER is openai already.
+    stt_base_url: str = os.getenv("STT_BASE_URL", "")
+    stt_api_key: str = os.getenv("STT_API_KEY", "")
+    stt_model: str = os.getenv("STT_MODEL", "whisper-1")
 
     # --- tools -------------------------------------------------------------
     exa_api_key: str = os.getenv("EXA_API_KEY", "")

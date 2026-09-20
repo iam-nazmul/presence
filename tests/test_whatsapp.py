@@ -21,7 +21,7 @@ from presence.core.reply import (
     Reply,
     TextBlock,
 )
-from presence.render.whatsapp import media, render, to_whatsapp
+from presence.render.whatsapp import GLITCH, media, render, to_whatsapp
 
 
 def one(reply: Reply) -> str:
@@ -60,17 +60,41 @@ def test_code_fences_survive_untouched() -> None:
     assert out == "```\nx = a**b * c\n```"
 
 
-def test_choices_degrade_to_a_numbered_list() -> None:
-    """WHATSAPP.supports_buttons is True, but a personal account draws nothing
-    for an interactive payload -- so the confirm flow rides on the numbered
-    list that worker._confirmation_answer accepts a bare "1" against."""
+def test_a_tool_confirmation_loses_its_numbered_scaffolding() -> None:
+    """A personal account draws nothing for an interactive payload, so a confirm
+    would otherwise arrive as "1. Yes / 2. No / Reply with a number." -- which is
+    the single most bot-looking thing this surface can send. The question stays;
+    worker._confirmation_answer takes the "yes" a person types back."""
+    reply = Reply(blocks=[
+        TextBlock("Save this lead? Name: Rina, phone +8801700"),
+        ChoiceBlock(
+            prompt="",
+            choices=[Choice("confirm:r:c:yes", "Yes, do it"),
+                     Choice("confirm:r:c:no", "No, cancel")],
+        ),
+    ])
+    out = one(reply)
+    assert out == "Save this lead? Name: Rina, phone +8801700"
+    assert "Reply with a number." not in out and "1." not in out
+
+
+def test_a_real_choice_still_degrades_to_a_numbered_list() -> None:
+    """Only the two-way tool confirmation is scaffolding. A genuine set of
+    options has nothing else to fall back on here."""
     reply = Reply(blocks=[ChoiceBlock(
-        prompt="Save this lead?",
-        choices=[Choice("confirm:r:c:yes", "Yes"), Choice("confirm:r:c:no", "No")],
+        prompt="Which one?",
+        choices=[Choice("a", "Monday"), Choice("b", "Tuesday"), Choice("c", "Friday")],
     )])
     out = one(reply)
-    assert "1. Yes" in out and "2. No" in out
-    assert "Reply with a number." in out
+    assert "1. Monday" in out and "3. Friday" in out
+
+
+def test_an_internal_error_never_reaches_the_chat_as_one() -> None:
+    """"I hit an internal error (KeyError)" is a machine with its guts showing.
+    The class name is in the log, where it is useful."""
+    out = one(Reply.error("I hit an internal error (KeyError)."))
+    assert "KeyError" not in out and "internal error" not in out
+    assert out == GLITCH
 
 
 def test_a_card_keeps_its_fields() -> None:
@@ -153,6 +177,12 @@ def wired(monkeypatch):
     enum_mod.ChatPresenceMedia = type("M", (), {"CHAT_PRESENCE_MEDIA_TEXT": object()})
     for name, mod in (("neonize.utils.jid", jid_mod), ("neonize.utils.enum", enum_mod)):
         monkeypatch.setitem(sys.modules, name, mod)
+
+    from presence.config import settings
+
+    # Pacing is real wall-clock sleeping. It has its own tests below; every
+    # other send test would just pay for it.
+    monkeypatch.setattr(settings, "whatsapp_human_delay", False)
 
     adapter = WhatsAppAdapter(session=":memory:")
     adapter.client = FakeClient()
@@ -250,3 +280,124 @@ def test_group_and_user_jids_both_round_trip() -> None:
 
     for user, server in (("8801700000000", "s.whatsapp.net"), ("120363000", "g.us")):
         assert WhatsAppAdapter._jid_str(FakeJID(user, server)) == f"{user}@{server}"
+
+
+# --- pacing ---------------------------------------------------------------
+
+
+@pytest.fixture()
+def paced(monkeypatch):
+    """Pacing on, but scaled down so the suite does not sit and wait."""
+    from presence.config import settings
+
+    monkeypatch.setattr(settings, "whatsapp_human_delay", True)
+    monkeypatch.setattr(settings, "whatsapp_max_delay_s", 0.01)
+    return settings
+
+
+def test_a_longer_message_takes_longer_to_type(monkeypatch) -> None:
+    from presence.adapters.whatsapp import _typing_seconds
+    from presence.config import settings
+
+    monkeypatch.setattr(settings, "whatsapp_human_delay", True)
+    monkeypatch.setattr(settings, "whatsapp_typing_cps", 18.0)
+    monkeypatch.setattr(settings, "whatsapp_max_delay_s", 6.0)
+
+    assert _typing_seconds("ok") < _typing_seconds("ok, i can do thursday morning")
+    # Nobody waits 40 seconds for a text, however long it is.
+    assert _typing_seconds("x" * 5000) == 6.0
+
+
+def test_pacing_off_means_no_delay(monkeypatch) -> None:
+    from presence.adapters.whatsapp import _typing_seconds
+    from presence.config import settings
+
+    monkeypatch.setattr(settings, "whatsapp_human_delay", False)
+    assert _typing_seconds("x" * 500) == 0.0
+
+
+def test_time_already_spent_thinking_counts_towards_the_pause(wired, paced, conv,
+                                                              monkeypatch) -> None:
+    """A turn that took twelve seconds of tool calls has already been slow. The
+    pacing is there to cover a reply that arrives too fast, not to add to one
+    that did not."""
+    import time
+
+    from presence.config import settings
+
+    monkeypatch.setattr(settings, "whatsapp_max_delay_s", 30.0)
+    wired._heard[conv.key] = time.monotonic() - 60
+
+    t0 = time.monotonic()
+    asyncio.run(wired.send(conv, Reply.text("yeah, that works")))
+    assert time.monotonic() - t0 < 1.0
+
+
+def test_the_typing_indicator_is_up_before_each_message(wired, paced, conv) -> None:
+    """An instant reply is the tell people notice first, so the indicator has to
+    be showing while the pause happens -- and WhatsApp expires it after about
+    ten seconds, which is why it goes out per chunk rather than once."""
+    asyncio.run(wired.send(conv, Reply.text("para. " * 2000)))
+    sent = len(wired.client.texts)
+    assert sent > 1
+    assert wired.client.presence == ["COMPOSING"] * sent + ["PAUSED"]
+
+
+# --- voice ----------------------------------------------------------------
+
+
+def _prompt(trust: str, tmp_path, monkeypatch, surface: str = "whatsapp") -> str:
+    from presence.config import settings
+    from presence.core.capabilities import BY_SURFACE
+    from presence.core.envelope import Conversation, Envelope, Identity
+    from presence.store import db
+
+    # conn() caches per thread, so pointing db_path somewhere temporary only
+    # works if the cached handle on the real file goes with it.
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "voice.db"))
+    monkeypatch.setattr(db._local, "conn", None, raising=False)
+
+    from presence.agent.prompts import build_messages
+
+    env = Envelope(
+        identity=Identity(surface, "8801700000000", "Rina"),
+        conversation=Conversation(surface, "8801700000000@s.whatsapp.net", None, True),
+        text="hi",
+        capabilities=BY_SURFACE[surface],
+        trust=trust,
+    )
+    return build_messages(env, env.conversation.key, "p1")[0]["content"]
+
+
+def test_whatsapp_gets_the_human_voice_at_every_trust_level(tmp_path, monkeypatch) -> None:
+    """A stranger asking about a service and the owner texting their own number
+    are both people reading a phone. Only one of them is a lead; neither of them
+    wants a bulleted report."""
+    for trust in ("owner", "guest"):
+        prompt = _prompt(trust, tmp_path, monkeypatch)
+        assert "Text the way a person texts" in prompt, trust
+        assert "No headings, no bullet points" in prompt, trust
+
+
+def test_the_voice_is_whatsapp_only(tmp_path, monkeypatch) -> None:
+    """A terminal wants the opposite of this."""
+    assert "Text the way a person texts" not in _prompt("owner", tmp_path, monkeypatch, "cli")
+
+
+def test_the_voice_never_licenses_claiming_to_be_human(tmp_path, monkeypatch) -> None:
+    """Sounding human and denying being software are different things, and the
+    second one is a lie told to someone who sincerely asked."""
+    prompt = _prompt("guest", tmp_path, monkeypatch)
+    assert "do not claim to be human" in prompt
+
+
+def test_the_owner_name_lands_in_the_voice(tmp_path, monkeypatch) -> None:
+    from presence.config import settings
+
+    monkeypatch.setattr(settings, "owner_name", "Nazmul")
+    assert "Nazmul's own number" in _prompt("guest", tmp_path, monkeypatch)
+
+    # OWNER_NAME defaults to the literal "you", which reads as gibberish in a
+    # sentence about the owner rather than to them.
+    monkeypatch.setattr(settings, "owner_name", "you")
+    assert "the owner's own number" in _prompt("guest", tmp_path, monkeypatch)

@@ -68,6 +68,14 @@ class Attachment:
     mime: str | None = None
     url: str | None = None
     data: bytes | None = None
+    # What was in it, once presence.media has read it: a document's text, or a
+    # voice note's transcript. Adapters leave these alone -- they download the
+    # bytes, and the worker fills these in before the model sees the message.
+    text: str | None = None
+    # Why there is no text, in a sentence the model can repeat to the person who
+    # sent it. A scan, a password, an .xlsx: different asks back, so the reason
+    # travels rather than a bare failure.
+    problem: str | None = None
 
 
 @dataclass(frozen=True)

@@ -62,8 +62,9 @@ Five layers, a protocol at each seam:
 
 ### The boundary rule
 
-> Nothing under `core/`, `agent/`, `providers/`, `tools/`, `store/`, `scheduler/` or
-> `gateway/` may import a surface SDK. Those imports live only in `adapters/` and `render/`.
+> Nothing under `core/`, `agent/`, `providers/`, `tools/`, `store/`, `scheduler/`,
+> `media/` or `gateway/` may import a surface SDK. Those imports live only in
+> `adapters/` and `render/`.
 
 `tests/test_boundaries.py` enforces it. This is the rule that keeps "add any surface later"
 true instead of aspirational — without it, `if surface == "slack"` appears in the loop within
@@ -324,14 +325,16 @@ and process on the queue — that is what the queue is for.
 src/presence/
   core/        envelope · capabilities · reply · events · protocols   ← the contracts
   gateway/     router (dedupe, identity, commands) · worker · hub
-  adapters/    cli · telegram                    ← the only place surface SDKs may appear
-  render/      base (split, degrade) · text · telegram
+  adapters/    cli · telegram · whatsapp         ← the only place surface SDKs may appear
+  render/      base (split, degrade) · text · telegram · whatsapp
+  media/       documents (pdf, docx, text) · audio (transcription)
   agent/       loop · prompts
   providers/   openai_compat
   tools/       registry (+ policy) · memory · web · schedule · context · crosspost
+               · leads · workspace · attachments
   store/       db · schema.sql
   scheduler/   ticker
-tests/         boundaries · loop · identity · tools
+tests/         boundaries · loop · identity · tools · whatsapp · media · workspace
 ```
 
 ---

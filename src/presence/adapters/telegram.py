@@ -29,6 +29,10 @@ log = logging.getLogger("presence.telegram")
 # Base64 inflates by a third and the whole thing rides in the context window.
 MAX_PHOTO_BYTES = 4 * 1024 * 1024
 
+# Documents and voice notes are read down to text before the model sees them.
+# getFile will not serve anything over 20MB anyway.
+MAX_FILE_BYTES = 16 * 1024 * 1024
+
 
 class TelegramAdapter:
     surface = "telegram"
@@ -70,7 +74,7 @@ class TelegramAdapter:
                 if env:
                     asyncio.create_task(sink(env))
 
-    async def _download(self, file_id: str) -> bytes | None:
+    async def _download(self, file_id: str, limit: int = MAX_PHOTO_BYTES) -> bytes | None:
         """file_id -> bytes, via getFile. None on anything going wrong.
 
         A photo that will not download is a lead that still needs capturing, so
@@ -86,12 +90,12 @@ class TelegramAdapter:
                 f"https://api.telegram.org/file/bot{self.token}/{path}"
             )
             f.raise_for_status()
-            if len(f.content) > MAX_PHOTO_BYTES:
-                log.warning("photo too large (%d bytes), skipping", len(f.content))
+            if len(f.content) > limit:
+                log.warning("attachment too large (%d bytes), skipping", len(f.content))
                 return None
             return f.content
         except Exception as e:
-            log.warning("photo download failed: %s", e)
+            log.warning("attachment download failed: %s", e)
             return None
 
     async def _to_envelope(self, u: dict) -> Envelope | None:
@@ -109,9 +113,19 @@ class TelegramAdapter:
             return None
         text = msg.get("text") or msg.get("caption") or ""
         attachments: list[Attachment] = []
-        if msg.get("voice"):
-            attachments.append(Attachment(kind="audio", name="voice note",
-                                          mime="audio/ogg"))
+        audio_seconds: list[int] = []
+        for key in ("voice", "audio"):
+            if msg.get(key):
+                clip = msg[key]
+                data = await self._download(clip["file_id"], MAX_FILE_BYTES)
+                attachments.append(Attachment(
+                    kind="audio", name="voice note" if key == "voice" else "audio",
+                    mime=clip.get("mime_type") or "audio/ogg", data=data,
+                    problem=None if data else "the recording would not download",
+                ))
+                extra_audio = clip.get("duration")
+                if extra_audio:
+                    audio_seconds.append(extra_audio)
         if msg.get("photo"):
             # Telegram sends the same photo at several sizes, smallest first.
             # The largest is the only one an ID number is legible in.
@@ -122,12 +136,17 @@ class TelegramAdapter:
             ))
         if msg.get("document"):
             d = msg["document"]
-            attachments.append(Attachment(kind="file", name=d.get("file_name"),
-                                          mime=d.get("mime_type")))
+            data = await self._download(d["file_id"], MAX_FILE_BYTES)
+            attachments.append(Attachment(
+                kind="file", name=d.get("file_name"), mime=d.get("mime_type"),
+                data=data, problem=None if data else "the file would not download",
+            ))
         if not text and not attachments:
             return None
 
         extra: dict = {}
+        if audio_seconds:
+            extra["audio_seconds"] = audio_seconds[0]
         if msg.get("reply_to_message", {}).get("text"):
             extra["replying_to"] = msg["reply_to_message"]["text"][:300]
         return self._build(msg.get("from", {}), msg.get("chat", {}), text,

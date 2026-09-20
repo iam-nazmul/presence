@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import deque
 from typing import Any
 
@@ -48,9 +49,17 @@ GROUP_SERVER = "g.us"
 # Base64 inflates by a third and the whole thing rides in the context window.
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
 
+# A document and a voice note are read down to text before the model sees them,
+# so what this ceiling protects is the minute spent parsing or uploading, not
+# the context window. presence.media caps the text that comes out.
+MAX_FILE_BYTES = 16 * 1024 * 1024
+
 # WhatsApp reorders messages posted back-to-back often enough to scramble a
 # split reply, and "…(2/3)" arriving first reads as a bug.
 SEND_GAP_S = 0.25
+
+# Reading what they sent takes a beat before any typing starts.
+READ_PAUSE_S = 0.8
 
 # Wrappers that carry the real message one level down. Disappearing messages and
 # view-once photos arrive like this, and unwrapped they look like empty events.
@@ -62,6 +71,14 @@ WRAPPERS = (
     "documentWithCaptionMessage",
     "editedMessage",
 )
+
+
+def _typing_seconds(text: str) -> float:
+    """How long a person would spend producing this message. 0 when disabled."""
+    if not settings.whatsapp_human_delay:
+        return 0.0
+    cps = max(settings.whatsapp_typing_cps, 1.0)
+    return max(min(READ_PAUSE_S + len(text) / cps, settings.whatsapp_max_delay_s), 0.0)
 
 
 def _has(msg: Any, field: str) -> bool:
@@ -100,6 +117,9 @@ class WhatsAppAdapter:
         # Everything we send echoes straight back as an IsFromMe event. Holding
         # the ids is the only thing between the self-chat and an infinite loop.
         self._sent: deque[str] = deque(maxlen=256)
+        # When each chat last said something, so the pacing below can count the
+        # time the model already spent rather than adding to it.
+        self._heard: dict[str, float] = {}
 
     # --- inbound ---------------------------------------------------------
 
@@ -202,6 +222,7 @@ class WhatsAppAdapter:
             return
         if env is None or self._sink is None:
             return
+        self._heard[env.conversation.key] = time.monotonic()
         await self._mark_read(event)
         await self.typing(env.conversation, True)
         await self._sink(env)
@@ -273,21 +294,34 @@ class WhatsAppAdapter:
             ))
         elif _has(msg, "videoMessage"):
             text = msg.videoMessage.caption
-            attachments.append(Attachment(kind="file", name="video",
-                                          mime=msg.videoMessage.mimetype))
+            attachments.append(Attachment(
+                kind="file", name="video", mime=msg.videoMessage.mimetype,
+                problem="video is not something that can be watched here",
+            ))
         elif _has(msg, "audioMessage"):
             audio = msg.audioMessage
+            # Downloaded, not just noted: a voice note is usually the whole
+            # message, and presence.media turns these bytes into what they said.
+            data = await self._download(msg, getattr(audio, "fileLength", 0),
+                                        MAX_FILE_BYTES)
             attachments.append(Attachment(
                 kind="audio",
                 name="voice note" if audio.PTT else "audio",
                 mime=audio.mimetype or "audio/ogg",
+                data=data,
+                problem=None if data else "the recording would not download",
             ))
             extra["audio_seconds"] = audio.seconds or None
         elif _has(msg, "documentMessage"):
             doc = msg.documentMessage
             text = doc.caption
-            attachments.append(Attachment(kind="file", name=doc.fileName or doc.title,
-                                          mime=doc.mimetype))
+            data = await self._download(msg, getattr(doc, "fileLength", 0),
+                                        MAX_FILE_BYTES)
+            attachments.append(Attachment(
+                kind="file", name=doc.fileName or doc.title, mime=doc.mimetype,
+                data=data,
+                problem=None if data else "the file would not download",
+            ))
         elif _has(msg, "stickerMessage"):
             text = "[sticker]"
 
@@ -327,19 +361,20 @@ class WhatsAppAdapter:
                     or (q.imageMessage.caption if _has(q, "imageMessage") else ""))
         return ""
 
-    async def _download(self, msg: Any, size_hint: int) -> bytes | None:
+    async def _download(self, msg: Any, size_hint: int,
+                        limit: int = MAX_IMAGE_BYTES) -> bytes | None:
         """Media bytes, or None. Never raises: a photo that will not download is
         still a conversation, and the agent can ask them to type it instead."""
-        if size_hint and size_hint > MAX_IMAGE_BYTES:
-            log.warning("image too large (%d bytes), skipping", size_hint)
+        if size_hint and size_hint > limit:
+            log.warning("attachment too large (%d bytes), skipping", size_hint)
             return None
         try:
             data = await self.client.download_any(msg)
         except Exception as e:
             log.warning("media download failed: %s", e)
             return None
-        if data and len(data) > MAX_IMAGE_BYTES:
-            log.warning("image too large (%d bytes), skipping", len(data))
+        if data and len(data) > limit:
+            log.warning("attachment too large (%d bytes), skipping", len(data))
             return None
         return data
 
@@ -400,8 +435,7 @@ class WhatsAppAdapter:
         last = ""
 
         for i, chunk in enumerate(chunks):
-            if i:
-                await asyncio.sleep(SEND_GAP_S)
+            await self._compose(conv, chunk, first=i == 0)
             last = await self._send_one(jid, chunk) or last
 
         for image in images:
@@ -418,6 +452,30 @@ class WhatsAppAdapter:
 
         await self.typing(conv, False)
         return last
+
+    async def _compose(self, conv: Conversation, text: str, first: bool) -> None:
+        """Hold the typing indicator for as long as this message would take.
+
+        A four-line answer that lands 200ms after they hit send was not typed by
+        anybody, and that reads as machinery before they have taken in a word of
+        it. So the indicator stays up for roughly as long as the message would
+        take to write, capped so nobody is left waiting on theatre. WhatsApp
+        expires a COMPOSING presence after about ten seconds, which is why it is
+        re-sent per chunk rather than once at the top.
+        """
+        pause = _typing_seconds(text)
+        if first:
+            # Thinking and tool calls have already kept them waiting, with the
+            # indicator up the whole time. Pacing is meant to cover a reply that
+            # arrives too fast, not to tax one that was already slow.
+            waited = time.monotonic() - self._heard.pop(conv.key, time.monotonic())
+            pause -= max(waited, 0.0)
+        if pause <= 0:
+            if not first:
+                await asyncio.sleep(SEND_GAP_S)
+            return
+        await self.typing(conv, True)
+        await asyncio.sleep(pause)
 
     async def _send_one(self, jid: Any, text: str) -> str:
         try:
