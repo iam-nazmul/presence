@@ -3,6 +3,7 @@
   presence chat                 talk to it in the terminal
   presence -p "..."             one shot
   presence telegram             run the Telegram surface
+  presence whatsapp             run the WhatsApp surface (links your own number)
   presence serve                every configured surface at once
   presence doctor               check the model, the tokens and the database
 """
@@ -12,6 +13,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
+import sys
 
 from presence.config import settings
 from presence.gateway import hub
@@ -29,6 +32,21 @@ def _log(verbose: bool) -> None:
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("openai").setLevel(logging.WARNING)
+
+
+def _leave_now() -> None:
+    """Exit without waiting for the WhatsApp connection's thread to be joined.
+
+    neonize parks that connection in a blocking Go call on a non-daemon worker
+    thread, and in 0.4.3 nothing in its API reliably releases it. asyncio.run()
+    joins the executor as it tears the loop down, so without this Ctrl-C looks
+    like it did nothing. Called from _run's finally -- every adapter is stopped
+    and the provider is closed by then -- and from inside the loop, because
+    asyncio.run does that join before main() ever gets control back.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 
 
 async def _run(surfaces: list[str], once: str | None = None) -> None:
@@ -50,9 +68,14 @@ async def _run(surfaces: list[str], once: str | None = None) -> None:
         from presence.adapters.telegram import TelegramAdapter
 
         hub.register(TelegramAdapter())
+    if "whatsapp" in surfaces and settings.whatsapp_enabled:
+        from presence.adapters.whatsapp import WhatsAppAdapter
+
+        hub.register(WhatsAppAdapter())
 
     if not hub.ADAPTERS:
-        print("No surfaces configured. Set TELEGRAM_BOT_TOKEN or use `presence chat`.")
+        print("No surfaces configured. Set TELEGRAM_BOT_TOKEN, set WHATSAPP_ENABLED=true, "
+              "or use `presence chat`.")
         return
 
     from presence.agent.loop import DefaultRuntime
@@ -81,6 +104,32 @@ async def _run(surfaces: list[str], once: str | None = None) -> None:
             await adapter.stop()
         await runtime.provider.aclose()
         await asyncio.sleep(0.05)
+        if hub.get("whatsapp") is not None:
+            _leave_now()
+
+
+def _whatsapp_status() -> str:
+    """The two things that actually go wrong: neonize missing, or libmagic is.
+
+    The import failure for a missing libmagic names a C library nobody connects
+    to WhatsApp, so it is worth spelling out here rather than at 9am on demo day.
+    """
+    import pathlib
+
+    try:
+        import neonize  # noqa: F401
+    except ImportError as e:
+        hint = "run `uv sync --extra whatsapp`"
+        if "libmagic" in str(e):
+            hint = "needs libmagic -- `brew install libmagic`"
+        return f"unavailable ({hint})"
+
+    linked = pathlib.Path(settings.whatsapp_session).exists()
+    state = "session linked" if linked else "not linked yet (a QR will print)"
+    if not settings.whatsapp_enabled:
+        return f"off, {state} -- set WHATSAPP_ENABLED=true or run `presence whatsapp`"
+    allowed = ", ".join(settings.whatsapp_allowed) or "ANYONE who has your number"
+    return f"on, {state}, answers: {allowed}"
 
 
 async def _doctor() -> None:
@@ -93,6 +142,7 @@ async def _doctor() -> None:
     print(f"database   {settings.db_path}")
     print(f"tools      {len(registry.TOOLS)}: {', '.join(sorted(registry.TOOLS))}")
     print(f"telegram   {'token set' if settings.telegram_token else 'MISSING'}")
+    print(f"whatsapp   {_whatsapp_status()}")
     print(f"owner ids  {', '.join(settings.owner_identities)}")
 
     print("\nchecking tool calling…")
@@ -144,7 +194,7 @@ async def _api() -> None:
 def main() -> None:
     p = argparse.ArgumentParser(prog="presence", description="One agent, every surface.")
     p.add_argument("command", nargs="?", default="chat",
-                   choices=["chat", "telegram", "serve", "doctor", "api"])
+                   choices=["chat", "telegram", "whatsapp", "serve", "doctor", "api"])
     p.add_argument("-p", "--prompt", help="one-shot message, then exit")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args()
@@ -161,8 +211,14 @@ def main() -> None:
     surfaces = {
         "chat": ["cli"],
         "telegram": ["telegram"],
-        "serve": ["cli", "telegram"],
+        "whatsapp": ["whatsapp"],
+        "serve": ["cli", "telegram", "whatsapp"],
     }[args.command]
+
+    # Asking for the surface by name is consent enough; WHATSAPP_ENABLED is
+    # there so `serve` does not link a personal account behind your back.
+    if args.command == "whatsapp":
+        settings.whatsapp_enabled = True
 
     try:
         asyncio.run(_run(surfaces, once=args.prompt))

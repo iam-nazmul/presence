@@ -145,7 +145,7 @@ CREATE INDEX IF NOT EXISTS idx_leads_business ON leads (business, created_at);
 CREATE TABLE IF NOT EXISTS uploads (
   id            TEXT PRIMARY KEY,
   conv_key      TEXT NOT NULL,
-  kind          TEXT NOT NULL,          -- image | file
+  kind          TEXT NOT NULL,          -- image | file | audio
   mime          TEXT,
   data          BLOB NOT NULL,
   created_at    TEXT NOT NULL

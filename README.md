@@ -33,11 +33,46 @@ Build that boundary once, correctly, and adding a surface is about 150 lines.
 ollama serve && ollama pull qwen3.5:9b   # any model whose `ollama show` lists `tools`
 uv sync
 cp .env.example .env                     # add TELEGRAM_BOT_TOKEN for the phone surface
-
 uv run presence doctor                   # checks model, tool-calling, tokens, database
 uv run presence chat                     # talk to it in the terminal
-uv run presence serve                    # terminal + Telegram at once
+uv run presence serve                    # every configured surface at once
 ```
+
+### WhatsApp, on your own number
+
+Meta's Cloud API only talks to WhatsApp *Business* numbers. To send and receive on a
+personal account the agent links as a device instead — the same thing web.whatsapp.com
+does, so the QR scan is the whole setup.
+
+```bash
+uv sync --extra whatsapp
+brew install libmagic                    # macOS; apt install libmagic1 on Debian/Ubuntu
+uv run presence whatsapp                 # prints a QR: WhatsApp → Linked devices
+```
+
+Set `WHATSAPP_ALLOWED` before pointing this at a number you use. Your personal WhatsApp is
+reachable by everyone who has it, and an empty allowlist means the agent answers all of
+them. Group chats are off unless `WHATSAPP_GROUPS=true`, and your own "Message yourself"
+chat works out of the box — the easiest way to try it without a second phone.
+
+Send it a PDF, a Word file, a spreadsheet exported as CSV or a voice note and it reads
+them: the document's text and the transcript arrive with the message, so it answers the
+question rather than asking you to paste the contents. Voice notes need a transcription
+endpoint — `STT_BASE_URL`, anything speaking the OpenAI `/audio/transcriptions` format —
+and without one it says it could not hear the note instead of guessing. A file it truly
+cannot read (a scanned PDF, an .xlsx) comes back with the reason and the thing that would
+work instead. The same goes for Telegram.
+
+Replies on this surface are written to read like a text message from your phone, not
+like output: no headings or bullets, a couple of sentences rather than a report, the
+same language and register the other person used, and the typing indicator held for
+about as long as the message would have taken to write (`WHATSAPP_HUMAN_DELAY=false`
+turns that pacing off). Set `OWNER_NAME` so it knows whose phone it is answering. It
+will not volunteer that it is software, and it will not deny it either — asked outright,
+it says whose assistant it is and offers to fetch you.
+
+This is not an API Meta publishes, and automating a personal account is against the
+WhatsApp ToS; numbers do get banned for it. Use a spare number.
 
 `presence doctor` is the one command to run before demoing anything. It makes a real
 tool-calling round trip and tells you if the model cannot do it — a model without tool
@@ -72,7 +107,7 @@ Five layers, a protocol at every seam:
 
 | Layer | Protocol | Today | Swaps to |
 |---|---|---|---|
-| Surface | `Adapter` | CLI, Telegram | Slack, WhatsApp, web, email, voice |
+| Surface | `Adapter` | CLI, Telegram, WhatsApp | Slack, web, email, voice |
 | Transport | `Queue` | `asyncio.Queue` | Redis, Trigger.dev |
 | Runtime | `AgentRuntime` | plain turn loop | LangGraph, OpenClaw |
 | Model | `ChatProvider` | Ollama (local) | OpenAI, OpenRouter, Anthropic |
@@ -173,22 +208,43 @@ There is no separate proactive code path. That is the point of the harness.
 src/presence/
   core/          envelope · capabilities · reply · events · protocols   ← frozen contracts
   gateway/       router (dedupe, identity, /link) · worker · hub
-  adapters/      cli · telegram                          ← the only place surface SDKs live
-  render/        base (split, degrade) · text · telegram
+  adapters/      cli · telegram · whatsapp               ← the only place surface SDKs live
+  render/        base (split, degrade) · text · telegram · whatsapp
   agent/         loop · prompts
   providers/     openai_compat (ollama | openai | openrouter)
   tools/         registry (+ policy) · memory · web · schedule · context · crosspost
+                 workspace (files + shell, owner only)
   store/         db · schema.sql
   scheduler/     ticker
-tests/           boundaries · loop · identity · tools
+tests/           boundaries · loop · identity · tools · whatsapp · workspace
 ```
+
+## Doing work, not just talking about it
+
+The `workspace` pack is what makes it an agent rather than a chatbot: `list_dir`,
+`read_file`, `write_file`, `which` and `run_command`. Ask it to create a Django project
+on your Desktop and it creates one.
+
+Two limits hold it in:
+
+- **Only the owner.** `files` and `shell` are granted to the owner trust level and nobody
+  else, so a stranger messaging your WhatsApp is never even shown that those tools exist.
+  Your own number therefore has to be in `OWNER_IDENTITIES` — otherwise you are a guest on
+  your own phone and the agent will refuse you.
+- **Only inside `WORKSPACE_ROOT`.** Paths are resolved before they are checked, so `../..`
+  and symlinks cannot climb out, and credential directories (`.ssh`, `.aws`, …) are refused
+  even when they sit inside the root.
+
+`run_command` is registered `destructive`, so it parks on a confirmation every time and you
+see the exact command before it runs. That button is the real boundary; the path checks are
+the belt.
 
 Full design notes, contracts and invariants: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Tests
 
 ```bash
-uv run pytest -q        # 42 tests, no model and no network required
+uv run pytest -q        # 97 tests, no model and no network required
 uv run ruff check .
 ```
 

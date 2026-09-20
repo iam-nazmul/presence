@@ -12,8 +12,10 @@ import re
 SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "presence"
 
 # Everything except adapters/ and render/ must be surface-agnostic.
-CORE_DIRS = ["core", "agent", "providers", "tools", "store", "scheduler", "gateway"]
-SURFACE_SDKS = {"telegram", "slack", "slack_sdk", "fastapi", "frappe", "discord", "twilio"}
+CORE_DIRS = ["core", "agent", "providers", "tools", "store", "scheduler", "gateway",
+             "media"]
+SURFACE_SDKS = {"telegram", "slack", "slack_sdk", "fastapi", "frappe", "discord",
+                "twilio", "neonize", "segno"}
 
 IMPORT_RE = re.compile(r"^\s*(?:from|import)\s+([\w.]+)", re.M)
 
@@ -33,8 +35,9 @@ def test_every_adapter_satisfies_the_protocol() -> None:
     """A surface is five methods and two attributes. Nothing else."""
     from presence.adapters.cli import CLIAdapter
     from presence.adapters.telegram import TelegramAdapter
+    from presence.adapters.whatsapp import WhatsAppAdapter
 
-    for cls in (CLIAdapter, TelegramAdapter):
+    for cls in (CLIAdapter, TelegramAdapter, WhatsAppAdapter):
         assert isinstance(cls.surface, str), cls
         assert cls.capabilities.max_chars > 0, cls
         for method in ("start", "send", "edit", "typing", "stop"):

@@ -18,6 +18,20 @@ dependencies = [
     "python-dotenv>=1.0",
     "rich>=13.7",
     "markdownify>=0.13",
+    # People send documents and expect them read. Pure Python, no system
+    # libraries -- .docx is handled with zipfile, and audio goes out to a
+    # transcription endpoint rather than being decoded here.
+    "pypdf>=5.1",
+]
+
+[project.optional-dependencies]
+# The WhatsApp surface links a personal account as a device, the way
+# web.whatsapp.com does. neonize is the whatsmeow binding that speaks that
+# protocol; it also needs the libmagic C library at import time
+# (`brew install libmagic`, or `apt install libmagic1`).
+whatsapp = [
+    "neonize>=0.4.3,<0.5",
+    "segno>=1.6",
 ]
 
 [project.scripts]

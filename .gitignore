@@ -1,5 +1,8 @@
 # secrets
 .env
+# The WhatsApp linked-device session. This is a credential, not just state:
+# whoever holds it can send as you until you unlink it from the phone.
+whatsapp-session.db*
 
 # local state
 presence.db
